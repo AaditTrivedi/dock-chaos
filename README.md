@@ -1,0 +1,204 @@
+# Dock Chaos
+
+**Chaos engineering toolkit for Docker Compose — break your services on purpose.**
+
+Dock Chaos attaches to any running Docker Compose environment and deliberately injects failures: random container kills, process freezes, memory pressure, and network partitions. It monitors whether your services recover, measures recovery time, and generates a fault-tolerance report card.
+
+Think [Netflix's Chaos Monkey](https://netflix.github.io/chaosmonkey/), but for local development and CI pipelines.
+
+## Why
+
+You don't know if your system is fault-tolerant until you've actually broken it. Most developers test the happy path — Dock Chaos tests everything else:
+
+- What happens when Redis dies mid-request?
+- Does your app gracefully degrade or crash?
+- How long does recovery actually take?
+- Do your health checks and restart policies work?
+
+I built this after discovering that my own [URL shortener](https://github.com/AaditTrivedi/url-shortener) had a 12-second latency spike when Redis went down. The app was supposed to fall back to PostgreSQL-only mode, but the fallback logic had a bug. Dock Chaos found it. I fixed it. Recovery dropped to under 200ms.
+
+## Quick Start
+
+```bash
+# Install
+pip install dock-chaos
+
+# Or install from source
+git clone https://github.com/AaditTrivedi/dock-chaos.git
+cd dock-chaos
+pip install -e .
+
+# Make sure your Docker Compose services are running
+cd /path/to/your/project
+docker compose up -d
+
+# Scan your services
+dock-chaos scan
+
+# Run a chaos attack (medium intensity, 60 seconds)
+dock-chaos attack
+
+# Run targeted chaos against a specific service
+dock-chaos attack --target redis --intensity high --duration 120
+
+# View the generated report
+dock-chaos show chaos_report.md
+```
+
+## Fault Types
+
+| Fault | What It Does | Simulates |
+|-------|-------------|-----------|
+| `container_kill` | Sends SIGKILL to the container process | Sudden crash, OOM kill, hardware failure |
+| `process_pause` | Freezes all processes inside the container | CPU starvation, deadlock, GC pause |
+| `memory_stress` | Allocates memory inside the container | Memory leak, resource exhaustion |
+| `network_partition` | Disconnects the container from its Docker network | Network failure, DNS outage, split-brain |
+
+## CLI Reference
+
+```
+Usage: dock-chaos [OPTIONS] COMMAND [ARGS]...
+
+Commands:
+  attack  Run a chaos attack against your Docker Compose services
+  scan    Scan and list all running Docker Compose services
+  show    Display a previously generated chaos report
+
+Attack Options:
+  -p, --project TEXT       Docker Compose project name (auto-detects)
+  -d, --duration INTEGER   Duration in seconds (default: 60)
+  -i, --intensity TEXT     low | medium | high (default: medium)
+  -t, --target TEXT        Target specific service (default: random)
+  -o, --output TEXT        Report output path (default: chaos_report.md)
+```
+
+## Sample Report
+
+After running `dock-chaos attack`, you get a markdown report like this:
+
+```
+# Dock Chaos — Fault Tolerance Report
+
+## Fault Injection Results
+
+| # | Fault Type        | Target  | Recovered | Recovery Time | Error |
+|---|-------------------|---------|-----------|---------------|-------|
+| 1 | container_kill    | app-1   | ✅ Yes    | 180ms         | —     |
+| 2 | network_partition | redis-1 | ✅ Yes    | 420ms         | —     |
+| 3 | process_pause     | db-1    | ✅ Yes    | 95ms          | —     |
+
+## Summary
+
+- Total faults injected: 3
+- Recovered: 3/3
+- Average recovery time: 232ms
+- Fault tolerance score: A — Excellent
+```
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────┐
+│                  dock-chaos CLI                  │
+│                  (Click + Python)                │
+└──────────────────────┬──────────────────────────┘
+                       │
+              ┌────────▼────────┐
+              │  Chaos Engine   │
+              │  (Orchestrator) │
+              └────────┬────────┘
+                       │
+        ┌──────────────┼──────────────┐
+        │              │              │
+  ┌─────▼─────┐ ┌─────▼─────┐ ┌─────▼─────┐
+  │ Container  │ │  Process  │ │  Network  │
+  │   Kill     │ │  Pause    │ │ Partition │
+  └─────┬──────┘ └─────┬─────┘ └─────┬─────┘
+        │              │              │
+        └──────────────┼──────────────┘
+                       │
+              ┌────────▼────────┐
+              │  Docker SDK     │
+              │  (Python)       │
+              └────────┬────────┘
+                       │
+              ┌────────▼────────┐
+              │  Your Docker    │
+              │  Compose        │
+              │  Services       │
+              └─────────────────┘
+                       │
+              ┌────────▼────────┐
+              │  Report         │
+              │  Generator      │
+              │  (Markdown)     │
+              └─────────────────┘
+```
+
+## Project Structure
+
+```
+dock-chaos/
+├── dock_chaos/
+│   ├── __init__.py          # Package version
+│   ├── cli.py               # Click CLI commands (attack, scan, show)
+│   ├── engine.py            # Chaos orchestration and recovery monitoring
+│   ├── docker_client.py     # Docker SDK wrapper
+│   ├── faults.py            # Fault injection implementations
+│   └── reporter.py          # Markdown report generation
+├── tests/
+│   ├── __init__.py
+│   └── test_dock_chaos.py   # 25 unit tests with mocked Docker
+├── .github/
+│   └── workflows/
+│       └── ci.yml           # GitHub Actions CI
+├── pyproject.toml           # pip-installable package config
+├── requirements.txt
+├── .gitignore
+├── LICENSE
+└── README.md
+```
+
+## Running Tests
+
+```bash
+pip install -r requirements.txt
+python -m pytest tests/ -v
+```
+
+## How It Works
+
+1. **Discovery** — Dock Chaos uses the Docker SDK to find all containers with the `com.docker.compose.project` label, identifying your Compose services automatically.
+
+2. **Fault Injection** — Based on intensity settings, the engine randomly selects targets and fault types. Each fault class knows how to inject and recover (e.g., `ContainerKillFault` sends SIGKILL then triggers a restart).
+
+3. **Recovery Monitoring** — After injection, the engine polls the container's status and health check endpoint. It measures the time from fault injection to full recovery.
+
+4. **Reporting** — Results are compiled into a markdown report with a summary table, per-fault details, a letter-grade score, and actionable recommendations.
+
+## Design Decisions
+
+- **Pluggable fault system**: Each fault type is a class inheriting from `BaseFault`. Adding a new fault type means writing one class with `inject()` and `recover()` methods.
+- **Non-destructive by default**: Dock Chaos always attempts recovery after injection. It won't leave your services in a broken state.
+- **No container modifications**: Faults are injected using Docker API operations (kill, pause, network disconnect), not by modifying container images or volumes.
+- **Works with any stack**: Dock Chaos doesn't care what language your services are written in. If it runs in Docker Compose, it can be chaos-tested.
+
+## Real-World Example
+
+I used Dock Chaos to test my own [URL shortener](https://github.com/AaditTrivedi/url-shortener):
+
+```bash
+cd url-shortener
+docker compose up -d
+dock-chaos attack --intensity high --duration 120
+```
+
+**What I found**: When Redis was killed, the URL shortener was supposed to fall back to PostgreSQL-only mode. Instead, it hung for 12 seconds waiting for the Redis connection to time out before failing over. 
+
+**What I fixed**: Reduced the Redis connection timeout from the default 30s to 1s, added a circuit breaker pattern, and wrapped all cache operations in try/except with graceful fallback. After the fix, recovery dropped from 12 seconds to under 200ms.
+
+That bug would never have been caught by unit tests or manual QA. It only surfaces under real failure conditions — which is exactly what chaos engineering is for.
+
+## License
+
+MIT

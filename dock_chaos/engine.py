@@ -20,7 +20,7 @@ FAULT_CLASSES = [ContainerKillFault, PauseFault, MemoryStressFault, NetworkParti
 INTENSITY_MAP = {
     "low": 1,
     "medium": 3,
-    "high": 999,  # continuous
+    "high": 999,
 }
 
 
@@ -49,10 +49,13 @@ class ChaosResult:
 class ChaosEngine:
     """Orchestrates fault injection against Docker Compose services."""
 
-    def __init__(self, project_name: Optional[str] = None, target_service: Optional[str] = None):
+    def __init__(self, project_name: Optional[str] = None,
+                 target_service: Optional[str] = None,
+                 enable_dashboard: bool = False):
         self.docker = DockerManager()
         self.project_name = project_name
         self.target_service = target_service
+        self.enable_dashboard = enable_dashboard
         self.results: list[ChaosResult] = []
 
     def discover_services(self) -> list[dict]:
@@ -78,6 +81,15 @@ class ChaosEngine:
             return targets
         return services
 
+    async def _broadcast(self, event: dict):
+        """Broadcast an event to the dashboard if enabled."""
+        if self.enable_dashboard:
+            try:
+                from dock_chaos.dashboard import broadcast_event
+                await broadcast_event(event)
+            except Exception:
+                pass
+
     async def run_chaos(self, duration: int = 60, intensity: str = "medium") -> list[ChaosResult]:
         """Run a chaos attack for the specified duration."""
         services = self.discover_services()
@@ -87,7 +99,6 @@ class ChaosEngine:
         start_time = time.time()
 
         while time.time() - start_time < duration and fault_count < max_faults:
-            # Pick random target and fault type
             target = random.choice(targets)
             fault_class = random.choice(FAULT_CLASSES)
             fault = fault_class(self.docker)
@@ -95,23 +106,26 @@ class ChaosEngine:
             result = ChaosResult(fault_name=fault.name, target=target["name"])
             result.injected_at = time.time()
 
+            # Broadcast injection event
+            await self._broadcast({
+                "type": "injection",
+                "fault": fault.name,
+                "target": target["name"],
+            })
+
             try:
                 container = self.docker.get_container(target["name"])
 
                 # Inject fault
                 fault.inject(container)
 
-                # Wait briefly then check recovery
+                # Wait then recover
                 await asyncio.sleep(fault.recovery_wait_seconds)
-
-                # Recover (if fault requires explicit recovery)
                 fault.recover(container)
 
                 # Monitor recovery
                 recovery_start = time.time()
-                recovered = await self._wait_for_recovery(
-                    target["name"], timeout=30
-                )
+                recovered = await self._wait_for_recovery(target["name"], timeout=30)
 
                 if recovered:
                     result.recovered = True
@@ -130,7 +144,16 @@ class ChaosEngine:
             self.results.append(result)
             fault_count += 1
 
-            # Brief pause between faults
+            # Broadcast result event
+            await self._broadcast({
+                "type": "result",
+                "fault": result.fault_name,
+                "target": result.target,
+                "recovered": result.recovered,
+                "recovery_time_ms": result.recovery_time_ms,
+                "error": result.error,
+            })
+
             if fault_count < max_faults and time.time() - start_time < duration:
                 await asyncio.sleep(2)
 
@@ -143,14 +166,10 @@ class ChaosEngine:
             try:
                 container = self.docker.get_container(container_name)
                 if container.status == "running":
-                    # Check if container is actually responding
                     health = container.attrs.get("State", {}).get("Health", {})
                     health_status = health.get("Status", "none")
-
-                    # If no health check configured, running = recovered
-                    if health_status == "none" or health_status == "healthy":
+                    if health_status in ("none", "healthy"):
                         return True
-                    # If health check exists but unhealthy, keep waiting
                     elif health_status == "unhealthy":
                         await asyncio.sleep(0.5)
                         continue

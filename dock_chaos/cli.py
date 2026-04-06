@@ -12,7 +12,7 @@ from dock_chaos.reporter import ReportGenerator
 
 
 @click.group()
-@click.version_option(version="0.1.0")
+@click.version_option(version="0.2.0")
 def cli():
     """Dock Chaos — Break your Docker services on purpose."""
     pass
@@ -25,11 +25,19 @@ def cli():
               help="Chaos intensity: low (1 failure), medium (3 failures), high (continuous)")
 @click.option("--target", "-t", default=None, help="Target specific service (default: random)")
 @click.option("--output", "-o", default="chaos_report.md", help="Output report file path")
-def attack(project, duration, intensity, target, output):
+@click.option("--dashboard", is_flag=True, default=False, help="Launch live WebSocket dashboard on http://localhost:8666")
+def attack(project, duration, intensity, target, output, dashboard):
     """Run a chaos attack against your Docker Compose services."""
     click.echo(click.style("\n🔥 Dock Chaos — Starting chaos attack\n", fg="red", bold=True))
 
-    engine = ChaosEngine(project_name=project, target_service=target)
+    # Start dashboard if requested
+    dashboard_server = None
+    if dashboard:
+        from dock_chaos.dashboard import run_dashboard_server
+        dashboard_server = run_dashboard_server()
+        click.echo(click.style("📊 Dashboard live at http://localhost:8666\n", fg="cyan"))
+
+    engine = ChaosEngine(project_name=project, target_service=target, enable_dashboard=dashboard)
 
     # Discover services
     services = engine.discover_services()
@@ -61,6 +69,16 @@ def attack(project, duration, intensity, target, output):
     click.echo(click.style("\n📊 Chaos Report Summary\n", fg="green", bold=True))
     click.echo(reporter.generate_summary())
     click.echo(f"\nFull report saved to: {output}")
+
+    if dashboard:
+        click.echo(click.style("\n📊 Dashboard still running at http://localhost:8666", fg="cyan"))
+        click.echo("Press Ctrl+C to stop.")
+        try:
+            while True:
+                import time
+                time.sleep(1)
+        except KeyboardInterrupt:
+            click.echo("\nDashboard stopped.")
 
 
 @cli.command()

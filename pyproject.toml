@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dock-chaos"
-version = "0.1.0"
+version = "0.2.0"
 description = "Chaos engineering toolkit for Docker Compose — break your services on purpose."
 readme = "README.md"
 license = {text = "MIT"}
@@ -13,6 +13,8 @@ authors = [{name = "Aadit Trivedi", email = "aadittrivedi09@gmail.com"}]
 dependencies = [
     "docker>=7.0.0",
     "click>=8.1.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
 ]
 
 [project.scripts]
@@ -24,3 +26,4 @@ Repository = "https://github.com/AaditTrivedi/dock-chaos"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
